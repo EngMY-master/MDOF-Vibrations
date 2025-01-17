@@ -1,0 +1,185 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from scipy.integrate import odeint
+from scipy.fft import fft, fftfreq
+
+# --------------------------------------------------
+# System Parameters and Computation (same as before)
+# --------------------------------------------------
+
+m1 = 2.0   # kg
+m2 = 1.0   # kg
+k1 = 6.0   # N/m
+k2 = 4.0   # N/m
+k3 = 5.0   # N/m
+
+# Mass and stiffness matrices
+M = np.array([[m1, 0],
+              [0,  m2]])
+K = np.array([[k1 + k2, -k2],
+              [-k2,      k2 + k3]])
+
+# Solve eigenvalue problem (transformed to a standard eigenvalue problem)
+eigvals, eigvecs = np.linalg.eig(np.linalg.inv(M) @ K)
+sorted_indices = np.argsort(eigvals)
+eigvals = eigvals[sorted_indices]
+eigvecs = eigvecs[:, sorted_indices]
+natural_freqs = np.sqrt(eigvals)
+
+print("Computed Natural Frequencies (rad/s):", natural_freqs)
+
+# Normalize mode shapes so that the first component = 1 if nonzero
+mode_shapes = []
+for i in range(eigvecs.shape[1]):
+    phi = eigvecs[:, i]
+    if np.abs(phi[0]) > 1e-8:
+        phi = phi / phi[0]
+    mode_shapes.append(phi)
+mode_shapes = np.array(mode_shapes).T  # each column is a mode shape
+
+print("Mode Shapes (normalized):")
+for i in range(mode_shapes.shape[1]):
+    print(f"Mode {i+1}: {mode_shapes[:, i]}")
+
+# --------------------------------------------------
+# 1. Time Response Simulation (Free Vibration)
+# --------------------------------------------------
+# We can simulate free vibration by giving an initial displacement and zero velocity.
+# For simplicity, assume the initial condition excites a combination of modes.
+# For example, set: x1(0)=1.0, x2(0)=0.5, and zero velocities.
+
+# Define the state-space representation for the 2-DOF system.
+# Let z = [x1, x2, v1, v2], then:
+#   dx/dt = v
+#   dv/dt = -M^{-1}K x
+def dynamics(z, t, M, K):
+    x = z[:2]
+    v = z[2:]
+    # Compute acceleration: a = -inv(M)*K*x
+    a = -np.linalg.inv(M) @ (K @ x)
+    return np.concatenate((v, a))
+
+# Time domain for simulation
+t = np.linspace(0, 10, 1000)  # 10 seconds
+
+# Initial conditions [x1, x2, v1, v2]
+z0 = [1.0, 0.5, 0.0, 0.0]
+
+# Solve the ODE
+sol = odeint(dynamics, z0, t, args=(M, K))
+x1 = sol[:, 0]
+x2 = sol[:, 1]
+
+# Plot time responses for both DOFs
+plt.figure(figsize=(10, 4))
+plt.plot(t, x1, label='x1 (DOF 1)')
+plt.plot(t, x2, label='x2 (DOF 2)')
+plt.xlabel('Time (s)')
+plt.ylabel('Displacement (m)')
+plt.title('Time Response of Each Degree of Freedom')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# --------------------------------------------------
+# 2. Phase Portrait for Each DOF
+# --------------------------------------------------
+# Plot displacement versus velocity for each DOF
+
+v1 = sol[:, 2]
+v2 = sol[:, 3]
+
+fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+axs[0].plot(x1, v1, color='tab:blue')
+axs[0].set_title('Phase Portrait: DOF 1')
+axs[0].set_xlabel('Displacement x1')
+axs[0].set_ylabel('Velocity v1')
+axs[0].grid(True)
+
+axs[1].plot(x2, v2, color='tab:green')
+axs[1].set_title('Phase Portrait: DOF 2')
+axs[1].set_xlabel('Displacement x2')
+axs[1].set_ylabel('Velocity v2')
+axs[1].grid(True)
+plt.tight_layout()
+plt.show()
+
+# --------------------------------------------------
+# 3. Frequency Response via FFT of the Time Signal
+# --------------------------------------------------
+# Compute the FFT of x1 (or x2) to identify dominant frequencies.
+
+# Choose one DOF, say x1
+N = len(t)
+T = t[1] - t[0]  # sampling interval
+x1_fft = fft(x1)
+xf = fftfreq(N, T)  # frequency bins
+
+# Only take the positive half of frequencies for plotting
+indices = np.where(xf >= 0)
+xf = xf[indices]
+x1_fft_magnitude = 2.0/N * np.abs(x1_fft[indices])
+
+plt.figure(figsize=(10,4))
+plt.plot(xf, x1_fft_magnitude, color='tab:purple')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Amplitude')
+plt.title('FFT of x1 Time Response')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# --------------------------------------------------
+# 4. Frequency Response Plot for a Forced Vibration Example
+# --------------------------------------------------
+# For illustrating a frequency response plot, we consider a lightly damped system
+# and apply a harmonic force. Here, we add a small damping term for realism.
+
+# Define damping matrix (assuming proportional damping for simplicity)
+# D = α*M + β*K. For demonstration, we choose small α and β.
+alpha = 0.05
+beta = 0.01
+D = alpha * M + beta * K
+
+def forced_dynamics(z, t, M, D, K, F, omega_force):
+    """
+    z: state vector [x1, x2, v1, v2]
+    F: force amplitude vector (applied to each DOF) - assume it's harmonic: F*cos(omega_force*t)
+    """
+    x = z[:2]
+    v = z[2:]
+    # Force vector is F*cos(omega_force*t) applied equally to both DOFs
+    force = F * np.cos(omega_force * t)
+    a = np.linalg.inv(M) @ (force - D @ v - K @ x)
+    return np.concatenate((v, a))
+
+# Force parameters
+F_amp = np.array([1.0, 0.0])  # forcing only on DOF1
+omega_force_vals = np.linspace(0.5, 5.0, 100)  # range of forcing frequencies
+
+steady_state_amplitudes = []
+
+for omega_force in omega_force_vals:
+    # For each omega_force, simulate the steady-state response.
+    # Use long enough simulation time (e.g., 0 to 30 s) so transients decay.
+    t_forced = np.linspace(0, 30, 2000)
+    z0_forced = [0, 0, 0, 0]
+    sol_forced = odeint(forced_dynamics, z0_forced, t_forced, args=(M, D, K, F_amp, omega_force))
+    # Take the last cycle (or last few points) to measure amplitude
+    x1_forced = sol_forced[-100:, 0]
+    amplitude = np.max(np.abs(x1_forced))
+    steady_state_amplitudes.append(amplitude)
+
+plt.figure(figsize=(10, 4))
+plt.plot(omega_force_vals, steady_state_amplitudes, 'b-', linewidth=2)
+plt.xlabel('Forcing Frequency (rad/s)')
+plt.ylabel('Steady-State Amplitude of x1 (m)')
+plt.title('Frequency Response of x1 Under Harmonic Forcing')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+plt.show()
